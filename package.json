@@ -1,0 +1,9 @@
+{
+  "name": "love-your-skin-by-monique-alysia",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Love Your Skin by Monique Alysia — website with Square checkout",
+  "dependencies": {
+    "square": "^40.0.0"
+  }
+}
