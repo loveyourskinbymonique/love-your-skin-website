@@ -927,6 +927,7 @@ function actionButton(p, i){
 products.forEach((p, i) => {
   const el = document.createElement('div');
   el.className = 'product';
+  if (p.buyUrl) el.id = 'gut-reset';
   const imgHTML = p.img
     ? `<img src="${p.img}" alt="${p.name}" loading="lazy">`
     : leafSVG;
@@ -966,6 +967,15 @@ function openProduct(i){
   document.getElementById('productModal').classList.add('open');
   document.getElementById('scrim').classList.add('open');
 }
+// Instagram link: /reset or /#gut-reset scrolls to the guide and opens its details
+window.addEventListener('load', () => {
+  if (location.hash !== '#gut-reset') return;
+  const card = document.getElementById('gut-reset');
+  if (!card) return;
+  card.scrollIntoView({behavior:'smooth', block:'center'});
+  const i = products.findIndex(p => p.buyUrl);
+  setTimeout(() => openProduct(i), 700);
+});
 function closeProduct(){
   document.getElementById('productModal').classList.remove('open');
   document.getElementById('scrim').classList.remove('open');
