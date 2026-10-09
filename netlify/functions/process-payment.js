@@ -1,116 +1,108 @@
 // netlify/functions/process-payment.js
 //
-// Verifies and captures a PayPal order that was approved on the client (index.html).
-// The PayPal Client ID is public and lives in index.html — that's expected and safe.
-// The PayPal Secret must ONLY live here, as a Netlify environment variable, never in
-// the front-end code.
+// Charges a card for the PRODUCT cart through Square.
+// The card form in index.html turns the card into a one-time token; this function
+// sends that token to Square to actually take the payment.
 //
-// Required Netlify environment variables (Site settings -> Environment variables):
-//   PAYPAL_CLIENT_ID      (same Client ID used in index.html)
-//   PAYPAL_SECRET         (from developer.paypal.com -> Apps & Credentials -> your app)
-//   PAYPAL_API_BASE       (optional) defaults to the sandbox API below.
-//                          Switch to https://api-m.paypal.com when you go live with
-//                          live (not sandbox) credentials.
+// The 14-Day Gut + Skin Wellness Reset is NOT sold through here — it uses its own
+// PayPal payment link set on the product in index.html.
+//
+// Set these in Netlify -> Site configuration -> Environment variables:
+//   SQUARE_ACCESS_TOKEN   (PRODUCTION access token from developer.squareup.com -> your app -> Credentials)
+//   SQUARE_LOCATION_ID    (optional — defaults to the Location ID used in index.html)
+//
+// Never put the access token in index.html or anywhere else in the code.
 
-const PAYPAL_API_BASE = process.env.PAYPAL_API_BASE || 'https://api-m.sandbox.paypal.com';
+const crypto = require('crypto');
 
-async function getAccessToken() {
-  const clientId = process.env.PAYPAL_CLIENT_ID;
-  const secret = process.env.PAYPAL_SECRET;
+const SQUARE_API_BASE = 'https://connect.squareup.com';
+const SQUARE_VERSION = '2025-01-23';
+const LOCATION_ID = process.env.SQUARE_LOCATION_ID || 'L1ABK3FVP8WRT';
 
-  if (!clientId || !secret) {
-    throw new Error('PayPal credentials are not configured on the server.');
-  }
+// Prices are checked here on the server so the amount charged can't be changed
+// from the shopper's browser. KEEP THIS LIST IN SYNC with the prices in index.html.
+const PRICES = {
+  'HydraBright': 102,
+  'Collagen Hydrator': 63,
+  'Clearskin Lightweight Moisturizer': 63,
+  'ReBalance': 63,
+  'Pigment Gel Pro': 130,
+  'Hyaluronic Acid Boosting Serum': 128,
+  'Vitamin B3 Brightening Serum': 130,
+  'Intensive Age Refining Treatment 0.5% Pure Retinol': 120,
+  'Intensive Brightening Treatment 0.5% Pure Retinol': 120,
+  'Intensive Clarity Treatment 0.5% Pure Retinol & Salicylic Acid': 120,
+  'Retinol Treatment for Sensitive Skin': 120,
+  'Triple Exfoliation Peel Pads': 60,
+  'Hydrator Plus Broad Spectrum SPF 30': 52
+};
+const TAX_RATE = 0.07;
+const SHIPPING_FLAT = 10;
 
-  const auth = Buffer.from(`${clientId}:${secret}`).toString('base64');
-
-  const response = await fetch(`${PAYPAL_API_BASE}/v1/oauth2/token`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Basic ${auth}`,
-      'Content-Type': 'application/x-www-form-urlencoded'
-    },
-    body: 'grant_type=client_credentials'
-  });
-
-  if (!response.ok) {
-    throw new Error('Failed to authenticate with PayPal.');
-  }
-
-  const data = await response.json();
-  return data.access_token;
+function json(statusCode, body) {
+  return { statusCode, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
 }
 
 exports.handler = async function (event) {
   if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, body: JSON.stringify({ success: false, error: 'Method not allowed.' }) };
+    return json(405, { success: false, error: 'Method not allowed.' });
+  }
+
+  const accessToken = process.env.SQUARE_ACCESS_TOKEN;
+  if (!accessToken) {
+    console.error('SQUARE_ACCESS_TOKEN is not set in Netlify.');
+    return json(500, { success: false, error: 'Payments are not set up yet. Please contact us to order.' });
   }
 
   try {
-    const { orderID, items } = JSON.parse(event.body || '{}');
+    const { sourceId, items } = JSON.parse(event.body || '{}');
 
-    if (!orderID) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({ success: false, error: 'Missing PayPal order ID.' })
-      };
+    if (!sourceId) {
+      return json(400, { success: false, error: 'Missing card details.' });
+    }
+    if (!Array.isArray(items) || items.length === 0) {
+      return json(400, { success: false, error: 'Your bag is empty.' });
     }
 
-    const accessToken = await getAccessToken();
-
-    // Capture the order. This is the step that actually moves the money and is
-    // safe to call even though the client already "approved" it — PayPal only
-    // lets a given order be captured once.
-    const captureResponse = await fetch(
-      `${PAYPAL_API_BASE}/v2/checkout/orders/${orderID}/capture`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json'
-        }
+    let subtotal = 0;
+    for (const name of items) {
+      if (!(name in PRICES)) {
+        console.error('Unknown item in cart:', name);
+        return json(400, { success: false, error: `"${name}" can't be purchased here right now.` });
       }
-    );
-
-    const captureData = await captureResponse.json();
-
-    if (!captureResponse.ok || captureData.status !== 'COMPLETED') {
-      console.error('PayPal capture failed:', captureData);
-      return {
-        statusCode: 402,
-        body: JSON.stringify({ success: false, error: 'Payment could not be captured.' })
-      };
+      subtotal += PRICES[name];
     }
+    const total = subtotal + subtotal * TAX_RATE + SHIPPING_FLAT;
+    const amountCents = Math.round(total * 100);
 
-    // At this point payment is confirmed. This is where you'd typically:
-    //  - save the order (items, amount, payer email) to a database or send yourself
-    //    a notification email (e.g. via Formspree, like your other forms)
-    //  - trigger fulfillment
-    const payer = captureData.payer || {};
-    const amount =
-      captureData.purchase_units &&
-      captureData.purchase_units[0] &&
-      captureData.purchase_units[0].payments &&
-      captureData.purchase_units[0].payments.captures &&
-      captureData.purchase_units[0].payments.captures[0] &&
-      captureData.purchase_units[0].payments.captures[0].amount;
-
-    console.log('Payment captured:', {
-      orderID,
-      payerEmail: payer.email_address,
-      amount,
-      items
+    const response = await fetch(`${SQUARE_API_BASE}/v2/payments`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Square-Version': SQUARE_VERSION,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        source_id: sourceId,
+        idempotency_key: crypto.randomUUID(),
+        location_id: LOCATION_ID,
+        amount_money: { amount: amountCents, currency: 'USD' },
+        note: `Love Your Skin order: ${items.join(', ')}`.slice(0, 500)
+      })
     });
 
-    return {
-      statusCode: 200,
-      body: JSON.stringify({ success: true, orderID })
-    };
+    const data = await response.json();
+
+    if (!response.ok || !data.payment || !['COMPLETED', 'APPROVED'].includes(data.payment.status)) {
+      console.error('Square payment failed:', JSON.stringify(data));
+      const detail = data.errors && data.errors[0] && data.errors[0].detail;
+      return json(402, { success: false, error: detail || 'Your card could not be charged. Please try another card.' });
+    }
+
+    console.log('Payment completed:', { paymentId: data.payment.id, amountCents, items });
+    return json(200, { success: true, paymentId: data.payment.id });
   } catch (err) {
     console.error('process-payment error:', err);
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ success: false, error: 'Something went wrong processing your payment.' })
-    };
+    return json(500, { success: false, error: 'Something went wrong processing your payment.' });
   }
 };
