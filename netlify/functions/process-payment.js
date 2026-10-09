@@ -17,7 +17,7 @@ const crypto = require('crypto');
 
 const SQUARE_API_BASE = 'https://connect.squareup.com';
 const SQUARE_VERSION = '2025-01-23';
-const LOCATION_ID = process.env.SQUARE_LOCATION_ID || 'L1ABK3FVP8WRT';
+const LOCATION_ID = process.env.SQUARE_LOCATION_ID || 'LZPATWTQ9APA7';
 
 // Prices are checked here on the server so the amount charged can't be changed
 // from the shopper's browser. KEEP THIS LIST IN SYNC with the prices in index.html.
